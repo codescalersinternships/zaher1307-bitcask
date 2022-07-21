@@ -39,7 +39,6 @@ type Bitcask struct {
     keyDir map[key]record
     config options
     currentActive activeFile
-    activeTstamp int64
 }
 
 type activeFile struct {
@@ -62,12 +61,12 @@ type options struct {
 }
 
 func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
+
     bitcask := Bitcask{
     	directoryPath: dirPath,
         config: options{accessPermission: ReadOnly, syncOption: SyncOnDemand},
     }
 
-    // parse user options
     for _, opt := range opts {
         switch opt {
         case ReadWrite:
@@ -77,20 +76,18 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         }
     }
 
-    // check if directory exists
     _, openErr := os.Open(dirPath)
 
     if openErr == nil {
         bitcask.buildKeyDir()
-        bitcask.setCurrentTstamp()
     } else if os.IsNotExist(openErr) {
         os.MkdirAll(dirPath, dirMode)
         bitcask.keyDir = make(map[key]record)
-        bitcask.activeTstamp = 1
         bitcask.createActiveFile()
     } else {
         return nil, openErr
     }
 
     return &bitcask, nil
+
 }
