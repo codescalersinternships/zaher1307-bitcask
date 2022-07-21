@@ -2,7 +2,7 @@ name: Testing actions
 
 on:
   push:
-    branches: [ development-branch ]
+    branches: [ development ]
   pull_request:
     branches: [ master ]
 
