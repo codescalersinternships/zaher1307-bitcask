@@ -1,8 +1,31 @@
 package bitcask
 
 import (
+    "fmt"
 	"io"
 	"os"
+    "path"
+)
+
+const (
+    ReadOnly ConfigOpt = 0
+    ReadWrite          = 1
+    SyncOnPut          = 2
+    SyncOnDemand       = 3
+
+    dirMode = os.FileMode(0700)
+    fileMode = os.FileMode(0600)
+
+    keyDirFileName = "keydir"
+    keyDirFileSeprator = " "
+
+    tstampOffset = 0
+    keySizeOffset = 19
+    valueSizeOffset = 38
+    numberFieldSize = 19
+
+    keyDoesNotExist = "key does not exist"
+    cannotOpenThisDir = "cannot open this directory"
 )
 
 type ConfigOpt int
@@ -15,30 +38,12 @@ type fileLine string
 
 type pendingWrites map[key]fileLine
 
-const maxFileSize = 1024 * 1024
-
-const (
-    ReadOnly ConfigOpt = 0
-    ReadWrite          = 1
-    SyncOnPut          = 2
-    SyncOnDemand       = 3
-)
-
-const (
-    dirMode = os.FileMode(0700)
-    fileMode = os.FileMode(0600)
-)
-
-const (
-    keyDirFileName = "keydir"
-    keyDirFileSeprator = " "
-)
-
 type Bitcask struct {
     directoryPath string
     keyDir map[key]record
     config options
     currentActive activeFile
+    pendingWrites map[key]fileLine
 }
 
 type activeFile struct {
@@ -60,6 +65,10 @@ type options struct {
     syncOption ConfigOpt
 }
 
+func (e BitcaskError) Error() string {
+    return string(e)
+}
+
 func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 
     bitcask := Bitcask{
@@ -71,6 +80,7 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         switch opt {
         case ReadWrite:
             bitcask.config.accessPermission = ReadWrite
+            bitcask.pendingWrites = make(map[key]fileLine)
         case SyncOnPut:
             bitcask.config.syncOption = SyncOnPut
         }
@@ -85,9 +95,30 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         bitcask.keyDir = make(map[key]record)
         bitcask.createActiveFile()
     } else {
-        return nil, openErr
+        return nil, BitcaskError(fmt.Sprintf("%s: %s", dirPath, cannotOpenThisDir))
     }
 
     return &bitcask, nil
 
 }
+
+func (bitcask *Bitcask) Get(key key) (string, error) {
+
+    recValue, isExist := bitcask.keyDir[key]
+
+    if !isExist {
+        return "", BitcaskError(fmt.Sprintf("%s: %s", string(key), keyDoesNotExist))
+    }
+
+    if recValue.isPending {
+        _, value, _, _, _ := extractFileLine(bitcask.pendingWrites[key])
+        return value, nil
+    } else {
+        buf := make([]byte, recValue.valueSize)
+        file, _ := os.Open(path.Join(bitcask.directoryPath, recValue.fileId))
+        file.ReadAt(buf, recValue.valuePos)
+        return string(buf), nil
+    }
+
+}
+
