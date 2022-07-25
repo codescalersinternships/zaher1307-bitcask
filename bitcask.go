@@ -1,14 +1,15 @@
 package bitcask
 
 import (
-    "fmt"
+	"fmt"
 	"os"
-    "path"
-    "strconv"
-    "time"
+	"path"
+	"strconv"
+	"strings"
+	"time"
 )
 
-const maxFileSize = 10 * 1024
+const maxFileSize = 1024
 
 const (
     ReadOnly     ConfigOpt = 0
@@ -24,8 +25,8 @@ const (
 )
 
 const (
-    dirMode = os.FileMode(0700)
-    fileMode = os.FileMode(0600)
+    dirMode = os.FileMode(0777)
+    fileMode = os.FileMode(0666)
 
     keyDirFilePrefix = "keydir"
     hintFilePrefix = "hintfile"
@@ -89,6 +90,11 @@ func (e BitcaskError) Error() string {
 
 }
 
+// Open creates a new process to manipulate the given bitcask datastore path.
+// It takes options ReadWrite, ReadOnly, SyncOnPut and SyncOnDemand.
+// Only one ReadWrite process can open a bitcask at a time.
+// Only ReadWrite permission can create a new bitcask datastore.
+// If there is no bitcask datastore in the given path a new datastore is created when ReadWrite permission is given.
 func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 
     bitcask := Bitcask{
@@ -125,6 +131,7 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
             lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
             os.O_CREATE, fileMode)
             lockFile.Close()
+            bitcask.createActiveFile()
         }
 
     } else if os.IsNotExist(openErr) {
@@ -144,6 +151,8 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
     return &bitcask, nil
 }
 
+// Get retrieves the value by key from a bitcask datastore.
+// returns an error if key does not exist in the bitcask datastore.
 func (bitcask *Bitcask) Get(key string) (string, error) {
 
     recValue, isExist := bitcask.keyDir[key]
@@ -165,6 +174,8 @@ func (bitcask *Bitcask) Get(key string) (string, error) {
 
 }
 
+// Put stores a value by key in a bitcask datastore.
+// Sync on each put if SyncOnPut option is set.
 func (bitcask *Bitcask) Put(key string, value string) error {
 
     if bitcask.config.writePermission == ReadOnly {
@@ -189,6 +200,9 @@ func (bitcask *Bitcask) Put(key string, value string) error {
 
 }
 
+// Delete removes a key from a bitcask datastore 
+// by appending a special TompStone value that will be deleted in the next merge.
+// returns an error if key does not exist in the bitcask datastore.
 func (bitcask *Bitcask) Delete(key string) error {
 
     if bitcask.config.writePermission == ReadOnly {
@@ -207,6 +221,7 @@ func (bitcask *Bitcask) Delete(key string) error {
 
 }
 
+// ListKeys list all keys in a bitcask datastore.
 func (bitcask *Bitcask) ListKeys() []string {
 
     var list []string
@@ -219,6 +234,8 @@ func (bitcask *Bitcask) ListKeys() []string {
 
 }
 
+// Fold folds over all key/value pairs in a bitcask datastore.
+// fun is expected to be in the form: F(K, V, Acc) -> Acc
 func (bitcask *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
 
     for key := range bitcask.keyDir {
@@ -229,6 +246,9 @@ func (bitcask *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
 
 }
 
+// Merge rearrange the bitcask datastore in a more compact form.
+// Also produces hintfiles to provide a faster startup.
+// returns an error if ReadWrite permission is not set.
 func (bitcask *Bitcask) Merge() error {
 
     if bitcask.config.writePermission == ReadOnly {
@@ -250,11 +270,17 @@ func (bitcask *Bitcask) Merge() error {
     hintFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, hintFileName),
     os.O_CREATE | os.O_RDWR, fileMode)
 
+    
+    bitcaskDir, _ := os.Open(bitcask.directoryPath)
+    files, _ := bitcaskDir.Readdir(0)
+    for _, file := range files {
+        oldFiles = append(oldFiles, file.Name())
+    }
+
     for key, recValue := range bitcask.keyDir {
         if recValue.fileId != bitcask.currentActive.fileName {
 
             tstamp := time.Now().UnixMicro()
-            oldFiles = append(oldFiles, recValue.fileId)
             value, _ := bitcask.Get(key)
             fileLine := string(compressFileLine(key, value, tstamp))
 
@@ -297,14 +323,17 @@ func (bitcask *Bitcask) Merge() error {
     hintFile.Close()
 
     for _, file := range oldFiles {
-        os.Remove(path.Join(bitcask.directoryPath, file))
-        os.Remove(path.Join(bitcask.directoryPath, hintFilePrefix + file))
+        if !strings.HasPrefix(file, ".") {
+            os.Remove(path.Join(bitcask.directoryPath, file))
+        }
     }
 
     return nil
     
 }
 
+// Sync forces all pending writes to be written into disk.
+// returns an error if ReadWrite permission is not set.
 func (bitcask *Bitcask) Sync() error {
 
     if bitcask.config.writePermission == ReadOnly {
@@ -329,6 +358,7 @@ func (bitcask *Bitcask) Sync() error {
 
 }
 
+// Close flushes all pending writes into disk and closes the bitcask datastore.
 func (bitcask *Bitcask) Close() {
 
     if bitcask.config.writePermission == ReadWrite {
