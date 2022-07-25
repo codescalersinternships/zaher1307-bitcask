@@ -216,6 +216,7 @@ func (bitcask *Bitcask) lockCheck() processAccess {
             return writer
         }
     }
+
     return noProcess
 
 }
@@ -233,6 +234,7 @@ func (bitcask *Bitcask) keyDirFileCheck() string {
             break
         }
     }
+
     return fileName
 
 }

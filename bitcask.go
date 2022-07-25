@@ -107,7 +107,6 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
         }
     }
 
-    // check if directory exists
     _, openErr := os.Open(dirPath)
 
     if openErr == nil {
@@ -288,6 +287,8 @@ func (bitcask *Bitcask) Merge() error {
             fmt.Fprintln(hintFile, hintFileLine)
             currentPos += int64(n)
             currentSize += int64(n)
+        } else {
+            newKeyDir[key] = bitcask.keyDir[key]
         }
     }
 
@@ -320,6 +321,7 @@ func (bitcask *Bitcask) Sync() error {
             recValue.isPending = false
             bitcask.keyDir[key] = recValue
             bitcask.writeToActiveFile(string(line))
+            delete(bitcask.pendingWrites, key)
         }
     }
 
