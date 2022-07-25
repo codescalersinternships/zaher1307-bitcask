@@ -274,7 +274,9 @@ func (bitcask *Bitcask) Merge() error {
     bitcaskDir, _ := os.Open(bitcask.directoryPath)
     files, _ := bitcaskDir.Readdir(0)
     for _, file := range files {
-        oldFiles = append(oldFiles, file.Name())
+        if file.Name() != bitcask.currentActive.fileName {
+            oldFiles = append(oldFiles, file.Name())
+        }
     }
 
     for key, recValue := range bitcask.keyDir {
@@ -342,14 +344,18 @@ func (bitcask *Bitcask) Sync() error {
 
     for key, line := range bitcask.pendingWrites {
         if bitcask.keyDir[key].isPending {
-            activeFileInfo, _ := bitcask.currentActive.file.Stat()
-
             recValue := bitcask.keyDir[key]
-            recValue.fileId = activeFileInfo.Name()
+
+            n := bitcask.writeToActiveFile(string(line))
+
+            recValue.fileId = bitcask.currentActive.fileName
             recValue.valuePos = bitcask.currentActive.currentPos + staticFields * numberFieldSize + int64(len(key))
             recValue.isPending = false
             bitcask.keyDir[key] = recValue
-            bitcask.writeToActiveFile(string(line))
+
+            bitcask.currentActive.currentPos += n
+            bitcask.currentActive.currentSize += n
+
             delete(bitcask.pendingWrites, key)
         }
     }

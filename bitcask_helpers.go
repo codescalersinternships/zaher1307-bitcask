@@ -95,7 +95,7 @@ func (bitcask *Bitcask) addPendingWrite(key string, value string, tstamp int64) 
 
 }
 
-func (bitcask *Bitcask) writeToActiveFile(line string) {
+func (bitcask *Bitcask) writeToActiveFile(line string) int64 {
 
     if int64(len(line)) + bitcask.currentActive.currentSize > maxFileSize {
         newActiveFileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
@@ -109,8 +109,7 @@ func (bitcask *Bitcask) writeToActiveFile(line string) {
     }
 
     n, _ := bitcask.currentActive.file.Write([]byte(fmt.Sprintln(line)))
-    bitcask.currentActive.currentSize += int64(n)
-    bitcask.currentActive.currentPos += int64(n)
+    return int64(n)
 
 }
 
