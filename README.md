@@ -46,7 +46,7 @@ func main() {
 }
 ```
 ## output with this only writer
-```sh
+```
 $ go run demo_writer/writer.go 
 ****** append 100 item ******
 ****** merge old files ******
@@ -56,7 +56,7 @@ value of key15 is:
 value of key77 is: value77
 ```
 ## output if there another writer
-```sh
+```
 $ go run demo_writer/writer.go
 another writer exists in this bitcask
 ```
@@ -115,7 +115,7 @@ func main() {
 }
 ```
 ## output if exist bitcask
-```sh
+```
 $ go run demo_reader/reader.go
 ****** Get some items ********
 value of key26 is: value26
@@ -123,12 +123,12 @@ value of key10 is: value10
 value of key89 is: value89
 ```
 ## output if no exist bitcask
-```sh
+```
 $ go run demo_reader/reader.go
 read only cannot create new bitcask directory
 ```
 ## output if there is writer exist
-```sh
+```
 $ go run demo_reader/reader.go
 another writer exists in this bitcask
 ```
