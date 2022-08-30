@@ -30,9 +30,20 @@ func (b *Bitcask) createActiveFile() error {
 	return nil
 }
 
-func (b *Bitcask) buildKeyDir() {
-	if b.config.writePermission == ReadOnly && b.lockCheck() == reader {
-		keyDirData, _ := os.ReadFile(path.Join(b.directoryPath, b.keyDirFileCheck()))
+func (b *Bitcask) buildKeyDir() error {
+	lock, err := b.lockCheck()
+	if err != nil {
+		return err
+	}
+	if b.config.writePermission == ReadOnly && lock == reader {
+		fileName, err := b.keyDirFileCheck()
+		if err != nil {
+			return err
+		}
+		keyDirData, err := os.ReadFile(path.Join(b.directoryPath, fileName))
+		if err != nil {
+			return err
+		}
 
 		b.keyDir = make(map[string]record)
 		keyDirScanner := bufio.NewScanner(strings.NewReader(string(keyDirData)))
@@ -40,7 +51,10 @@ func (b *Bitcask) buildKeyDir() {
 		for keyDirScanner.Scan() {
 			line := keyDirScanner.Text()
 
-			key, fileId, valueSize, valuePos, tstamp := extractKeyDirFileLine(line)
+			key, fileId, valueSize, valuePos, tstamp, err := extractKeyDirFileLine(line)
+			if err != nil {
+				return err
+			}
 
 			b.keyDir[key] = record{
 				fileId:    fileId,
@@ -52,8 +66,14 @@ func (b *Bitcask) buildKeyDir() {
 	} else {
 		var fileNames []string
 		hintFilesMap := make(map[string]string)
-		bitcaskDir, _ := os.Open(b.directoryPath)
-		files, _ := bitcaskDir.Readdir(0)
+		bitcaskDir, err := os.Open(b.directoryPath)
+		if err != nil {
+			return err
+		}
+		files, err := bitcaskDir.Readdir(0)
+		if err != nil {
+			return err
+		}
 
 		for _, file := range files {
 			name := file.Name()
@@ -67,7 +87,10 @@ func (b *Bitcask) buildKeyDir() {
 
 		for _, name := range fileNames {
 			if hint, isExist := hintFilesMap[name]; isExist {
-				b.extractHintFile(hint)
+				err = b.extractHintFile(hint)
+				if err != nil {
+					return err
+				}
 			} else {
 				var currentPos int64 = 0
 				fileData, _ := os.ReadFile(path.Join(b.directoryPath, name))
@@ -86,6 +109,7 @@ func (b *Bitcask) buildKeyDir() {
 			}
 		}
 	}
+	return nil
 }
 
 func (b *Bitcask) writeToActiveFile(line string) (int64, error) {
@@ -119,12 +143,18 @@ func extractFileLine(line string) (string, string, int64, int64, int64) {
 	return key, value, tstamp, keySize, valueSize
 }
 
-func (b *Bitcask) buildKeyDirFile() {
+func (b *Bitcask) buildKeyDirFile() error {
 	keyDirFileName := keyDirFilePrefix + strconv.FormatInt(time.Now().UnixMicro(), 10)
 	b.keyDirFile = keyDirFileName
-	keyDirFile, _ := os.Create(path.Join(b.directoryPath, keyDirFileName))
+	keyDirFile, err := os.Create(path.Join(b.directoryPath, keyDirFileName))
+	if err != nil {
+		return err
+	}
 	for key, recValue := range b.keyDir {
-		fileId, _ := strconv.ParseInt(recValue.fileId, 10, 64)
+		fileId, err := strconv.ParseInt(recValue.fileId, 10, 64)
+		if err != nil {
+			return err
+		}
 		fileIdStr := padWithZero(fileId)
 		valueSizeStr := padWithZero(recValue.valueSize)
 		valuePosStr := padWithZero(recValue.valuePos)
@@ -134,16 +164,32 @@ func (b *Bitcask) buildKeyDirFile() {
 		line := fileIdStr + valueSizeStr + valuePosStr + tstampStr + keySizeStr + key
 		fmt.Fprintln(keyDirFile, line)
 	}
+	return nil
 }
 
-func extractKeyDirFileLine(line string) (string, string, int64, int64, int64) {
-	fileId, _ := strconv.ParseInt(line[0:19], 10, 64)
-	valueSize, _ := strconv.ParseInt(line[19:38], 10, 64)
-	valuePos, _ := strconv.ParseInt(line[38:57], 10, 64)
-	tstamp, _ := strconv.ParseInt(line[57:76], 10, 64)
-	keySize, _ := strconv.ParseInt(line[76:95], 10, 64)
+func extractKeyDirFileLine(line string) (string, string, int64, int64, int64, error) {
+	fileId, err := strconv.ParseInt(line[0:19], 10, 64)
+	if err != nil {
+		return "", "", 0, 0, 0, err
+	}
+	valueSize, err := strconv.ParseInt(line[19:38], 10, 64)
+	if err != nil {
+		return "", "", 0, 0, 0, err
+	}
+	valuePos, err := strconv.ParseInt(line[38:57], 10, 64)
+	if err != nil {
+		return "", "", 0, 0, 0, err
+	}
+	tstamp, err := strconv.ParseInt(line[57:76], 10, 64)
+	if err != nil {
+		return "", "", 0, 0, 0, err
+	}
+	keySize, err := strconv.ParseInt(line[76:95], 10, 64)
+	if err != nil {
+		return "", "", 0, 0, 0, err
+	}
 	key := line[95 : 95+keySize]
-	return key, strconv.FormatInt(fileId, 10), valueSize, valuePos, tstamp
+	return key, strconv.FormatInt(fileId, 10), valueSize, valuePos, tstamp, nil
 }
 
 func buildHintFileLine(recValue record, key string) string {
@@ -154,18 +200,33 @@ func buildHintFileLine(recValue record, key string) string {
 	return tstamp + keySize + valueSize + valuePos + key
 }
 
-func (b *Bitcask) extractHintFile(hintName string) {
-	hintFileData, _ := os.ReadFile(path.Join(b.directoryPath, hintName))
+func (b *Bitcask) extractHintFile(hintName string) error {
+	hintFileData, err := os.ReadFile(path.Join(b.directoryPath, hintName))
+	if err != nil {
+		return err
+	}
 	hintFileScanner := bufio.NewScanner(strings.NewReader(string(hintFileData)))
 
 	fileId := strings.Trim(hintName, hintFilePrefix)
 
 	for hintFileScanner.Scan() {
 		line := hintFileScanner.Text()
-		tstamp, _ := strconv.ParseInt(line[0:19], 10, 64)
-		keySize, _ := strconv.ParseInt(line[19:38], 10, 64)
-		valueSize, _ := strconv.ParseInt(line[38:57], 10, 64)
-		valuePos, _ := strconv.ParseInt(line[57:76], 10, 64)
+		tstamp, err := strconv.ParseInt(line[0:19], 10, 64)
+		if err != nil {
+			return err
+		}
+		keySize, err := strconv.ParseInt(line[19:38], 10, 64)
+		if err != nil {
+			return err
+		}
+		valueSize, err := strconv.ParseInt(line[38:57], 10, 64)
+		if err != nil {
+			return err
+		}
+		valuePos, err := strconv.ParseInt(line[57:76], 10, 64)
+		if err != nil {
+			return err
+		}
 		key := line[76 : 76+keySize]
 
 		b.keyDir[key] = record{
@@ -175,28 +236,41 @@ func (b *Bitcask) extractHintFile(hintName string) {
 			tstamp:    tstamp,
 		}
 	}
+	return nil
 }
 
-func (b *Bitcask) lockCheck() processAccess {
-	bitcaskDir, _ := os.Open(b.directoryPath)
+func (b *Bitcask) lockCheck() (processAccess, error) {
+	bitcaskDir, err := os.Open(b.directoryPath)
+	if err != nil {
+		return noProcess, err
+	}
 
-	files, _ := bitcaskDir.Readdir(0)
+	files, err := bitcaskDir.Readdir(0)
+	if err != nil {
+		return noProcess, err
+	}
 
 	for _, file := range files {
 		if strings.HasPrefix(file.Name(), readLock) {
-			return reader
+			return reader, nil
 		} else if strings.HasPrefix(file.Name(), writeLock) {
-			return writer
+			return writer, nil
 		}
 	}
-	return noProcess
+	return noProcess, nil
 }
 
-func (b *Bitcask) keyDirFileCheck() string {
+func (b *Bitcask) keyDirFileCheck() (string, error) {
 	var fileName string
-	bitcaskDir, _ := os.Open(b.directoryPath)
+	bitcaskDir, err := os.Open(b.directoryPath)
+	if err != nil {
+		return "", err
+	}
 
-	files, _ := bitcaskDir.Readdir(0)
+	files, err := bitcaskDir.Readdir(0)
+	if err != nil {
+		return "", err
+	}
 
 	for _, file := range files {
 		if strings.HasPrefix(file.Name(), keyDirFilePrefix) {
@@ -204,7 +278,7 @@ func (b *Bitcask) keyDirFileCheck() string {
 			break
 		}
 	}
-	return fileName
+	return fileName, err
 }
 
 func padWithZero(val int64) string {

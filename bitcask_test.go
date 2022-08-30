@@ -227,7 +227,7 @@ func TestFold(t *testing.T) {
 		}
 
 		want := 110
-		got := b.Fold(func(s1, s2 string, a any) any {
+		got, _ := b.Fold(func(s1, s2 string, a any) any {
 			acc, _ := a.(int)
 			k, _ := strconv.Atoi(s1)
 			v, _ := strconv.Atoi(s2)

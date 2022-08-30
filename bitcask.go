@@ -107,21 +107,36 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 	_, openErr := os.Open(dirPath)
 
 	if openErr == nil {
-		if bitcask.lockCheck() == writer {
+		if lock, err := bitcask.lockCheck(); lock == writer {
+			if err != nil {
+				return nil, err 
+			}
 			return nil, BitcaskError(WriterExist)
 		}
 		bitcask.buildKeyDir()
 		if bitcask.config.writePermission == ReadOnly {
-			bitcask.buildKeyDirFile()
+			err := bitcask.buildKeyDirFile()
+			if err != nil {
+				return nil, err
+			}
 			bitcask.lock = readLock + strconv.Itoa(int(time.Now().UnixMicro()))
-			lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
+			lockFile, err := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
 				os.O_CREATE, fileMode)
+			if err != nil {
+				return nil, err
+			}
 			lockFile.Close()
 		} else {
 			bitcask.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
-			lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
+			lockFile, err := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
 				os.O_CREATE, fileMode)
-			lockFile.Close()
+			if err != nil {
+				return nil, err
+			}
+			err = lockFile.Close()
+			if err != nil {
+				return nil, err
+			}
 			bitcask.createActiveFile()
 		}
 
@@ -133,9 +148,15 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 		bitcask.keyDir = make(map[string]record)
 		bitcask.createActiveFile()
 		bitcask.lock = writeLock + strconv.Itoa(int(time.Now().UnixMicro()))
-		lockFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
+		lockFile, err := os.OpenFile(path.Join(bitcask.directoryPath, bitcask.lock),
 			os.O_CREATE, fileMode)
-		lockFile.Close()
+		if err != nil {
+			return nil, err
+		}
+		err = lockFile.Close()
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		return nil, BitcaskError(fmt.Sprintf("%s: %s", dirPath, CannotOpenThisDir))
 	}
@@ -151,7 +172,10 @@ func (b *Bitcask) Get(key string) (string, error) {
 		return "", BitcaskError(fmt.Sprintf("%s: %s", string(key), KeyDoesNotExist))
 	}
 	buf := make([]byte, recValue.valueSize)
-	file, _ := os.Open(path.Join(b.directoryPath, recValue.fileId))
+	file, err := os.Open(path.Join(b.directoryPath, recValue.fileId))
+	if err != nil {
+		return "", err
+	}
 	defer file.Close()
 	file.ReadAt(buf, int64(recValue.valuePos))
 	return string(buf), nil
@@ -182,7 +206,10 @@ func (b *Bitcask) Put(key string, value string) error {
 	b.activeFile.currentSize += n
 
 	if b.config.syncOption == SyncOnPut {
-		b.Sync()
+		err = b.Sync()
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -216,12 +243,15 @@ func (b *Bitcask) ListKeys() []string {
 
 // Fold folds over all key/value pairs in a bitcask datastore.
 // fun is expected to be in the form: F(K, V, Acc) -> Acc
-func (b *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
+func (b *Bitcask) Fold(fun func(string, string, any) any, acc any) (any, error) {
 	for key := range b.keyDir {
-		value, _ := b.Get(key)
+		value, err := b.Get(key)
+		if err != nil {
+			return nil, err
+		}
 		acc = fun(key, value, acc)
 	}
-	return acc
+	return acc, nil
 }
 
 // Merge rearrange the bitcask datastore in a more compact form.
@@ -241,14 +271,23 @@ func (b *Bitcask) Merge() error {
 	hintFileName := hintFilePrefix + mergeFileName
 	b.Sync()
 
-	mergeFile, _ := os.OpenFile(path.Join(b.directoryPath, mergeFileName),
+	mergeFile, err := os.OpenFile(path.Join(b.directoryPath, mergeFileName),
 		os.O_CREATE|os.O_RDWR, fileMode)
+	if err != nil {
+		return err
+	}
 
-	hintFile, _ := os.OpenFile(path.Join(b.directoryPath, hintFileName),
+	hintFile, err := os.OpenFile(path.Join(b.directoryPath, hintFileName),
 		os.O_CREATE|os.O_RDWR, fileMode)
+	if err != nil {
+		return err
+	}
 
 	bitcaskDir, _ := os.Open(b.directoryPath)
-	files, _ := bitcaskDir.Readdir(0)
+	files, err := bitcaskDir.Readdir(0)
+	if err != nil {
+		return err
+	}
 	for _, file := range files {
 		if file.Name() != b.activeFile.fileName {
 			oldFiles = append(oldFiles, file.Name())
@@ -259,20 +298,35 @@ func (b *Bitcask) Merge() error {
 		if recValue.fileId != b.activeFile.fileName {
 
 			tstamp := time.Now().UnixMicro()
-			value, _ := b.Get(key)
+			value, err := b.Get(key)
+			if err != nil {
+				return err
+			}
 			fileLine := string(compressFileLine(key, value, tstamp))
 
 			if int64(len(fileLine))+currentSize > maxFileSize {
-				mergeFile.Close()
-				hintFile.Close()
+				err = mergeFile.Close()
+				if err != nil {
+					return err
+				}
+				err = hintFile.Close()
+				if err != nil {
+					return err
+				}
 
 				mergeFileName = strconv.FormatInt(time.Now().UnixMicro(), 10)
-				mergeFile, _ = os.OpenFile(path.Join(b.directoryPath, mergeFileName),
+				mergeFile, err = os.OpenFile(path.Join(b.directoryPath, mergeFileName),
 					os.O_CREATE|os.O_RDWR, fileMode)
+				if err != nil {
+					return err
+				}
 
 				hintFileName = hintFilePrefix + mergeFileName
-				hintFile, _ = os.OpenFile(path.Join(b.directoryPath, hintFileName),
+				hintFile, err = os.OpenFile(path.Join(b.directoryPath, hintFileName),
 					os.O_CREATE|os.O_RDWR, fileMode)
+				if err != nil {
+					return err
+				}
 
 				currentPos = 0
 				currentSize = 0
@@ -286,7 +340,10 @@ func (b *Bitcask) Merge() error {
 			}
 
 			hintFileLine := buildHintFileLine(newKeyDir[key], key)
-			n, _ := fmt.Fprintln(mergeFile, fileLine)
+			n, err := fmt.Fprintln(mergeFile, fileLine)
+			if err != nil {
+				return err
+			}
 			fmt.Fprintln(hintFile, hintFileLine)
 			currentPos += int64(n)
 			currentSize += int64(n)
@@ -296,12 +353,21 @@ func (b *Bitcask) Merge() error {
 	}
 
 	b.keyDir = newKeyDir
-	mergeFile.Close()
-	hintFile.Close()
+	err = mergeFile.Close()
+	if err != nil {
+		return err
+	}
+	err = hintFile.Close()
+	if err != nil {
+		return err
+	}
 
 	for _, file := range oldFiles {
 		if !strings.HasPrefix(file, ".") {
-			os.Remove(path.Join(b.directoryPath, file))
+			err = os.Remove(path.Join(b.directoryPath, file))
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -322,14 +388,30 @@ func (b *Bitcask) Sync() error {
 }
 
 // Close flushes all pending writes into disk and closes the bitcask datastore.
-func (b *Bitcask) Close() {
+func (b *Bitcask) Close() error {
 	if b.config.writePermission == ReadWrite {
-		b.Sync()
-		b.activeFile.file.Close()
+		err := b.Sync()
+		if err != nil {
+			return err
+		}
+		err = b.activeFile.file.Close()
+		if err != nil {
+			return err
+		}
 		os.Remove(path.Join(b.directoryPath, b.lock))
+		if err != nil {
+			return err
+		}
 	} else {
-		os.Remove(path.Join(b.directoryPath, b.keyDirFile))
-		os.Remove(path.Join(b.directoryPath, b.lock))
+		err := os.Remove(path.Join(b.directoryPath, b.keyDirFile))
+		if err != nil {
+			return err
+		}
+		err = os.Remove(path.Join(b.directoryPath, b.lock))
+		if err != nil {
+			return err
+		}
 	}
 	b = nil
+	return nil
 }
