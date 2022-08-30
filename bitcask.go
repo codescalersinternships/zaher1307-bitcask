@@ -40,9 +40,6 @@ const (
 
 	readLock  = ".readlock"
 	writeLock = ".writelock"
-
-	maxPendingWrites = 100
-
 	tompStone = "DELETE THIS VALUE"
 )
 
@@ -60,11 +57,10 @@ type Bitcask struct {
 	keyDirFile    string
 	keyDir        map[string]record
 	config        options
-	currentActive activeFile
-	pendingWrites map[string]string
+	activeFile    dataFile
 }
 
-type activeFile struct {
+type dataFile struct {
 	file        *os.File
 	fileName    string
 	currentPos  int64
@@ -76,7 +72,6 @@ type record struct {
 	valueSize int64
 	valuePos  int64
 	tstamp    int64
-	isPending bool
 }
 
 type options struct {
@@ -104,7 +99,6 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 		switch opt {
 		case ReadWrite:
 			bitcask.config.writePermission = ReadWrite
-			bitcask.pendingWrites = make(map[string]string)
 		case SyncOnPut:
 			bitcask.config.syncOption = SyncOnPut
 		}
@@ -150,44 +144,45 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 
 // Get retrieves the value by key from a bitcask datastore.
 // returns an error if key does not exist in the bitcask datastore.
-func (bitcask *Bitcask) Get(key string) (string, error) {
-	recValue, isExist := bitcask.keyDir[key]
+func (b *Bitcask) Get(key string) (string, error) {
+	recValue, isExist := b.keyDir[key]
 
 	if !isExist {
 		return "", BitcaskError(fmt.Sprintf("%s: %s", string(key), KeyDoesNotExist))
 	}
-
-	if recValue.isPending {
-		_, value, _, _, _ := extractFileLine(bitcask.pendingWrites[key])
-		return value, nil
-	} else {
-		buf := make([]byte, recValue.valueSize)
-		file, _ := os.Open(path.Join(bitcask.directoryPath, recValue.fileId))
-		file.ReadAt(buf, recValue.valuePos)
-		file.Close()
-		return string(buf), nil
-	}
+	buf := make([]byte, recValue.valueSize)
+	file, _ := os.Open(path.Join(b.directoryPath, recValue.fileId))
+	defer file.Close()
+	file.ReadAt(buf, int64(recValue.valuePos))
+	return string(buf), nil
 }
 
 // Put stores a value by key in a bitcask datastore.
 // Sync on each put if SyncOnPut option is set.
-func (bitcask *Bitcask) Put(key string, value string) error {
-	if bitcask.config.writePermission == ReadOnly {
+func (b *Bitcask) Put(key string, value string) error {
+	if b.config.writePermission == ReadOnly {
 		return BitcaskError(WriteDenied)
 	}
 
 	tstamp := time.Now().UnixMicro()
-	bitcask.keyDir[key] = record{
-		fileId:    "",
-		valueSize: int64(len(value)),
-		valuePos:  0,
-		tstamp:    tstamp,
-		isPending: true,
-	}
-	bitcask.addPendingWrite(key, value, tstamp)
 
-	if bitcask.config.syncOption == SyncOnPut {
-		bitcask.Sync()
+	n, err := b.writeToActiveFile(string(compressFileLine(key, value, tstamp)))
+	if err != nil {
+		return err
+	}
+
+	b.keyDir[key] = record{
+		fileId:    b.activeFile.fileName,
+		valueSize: int64(len(value)),
+		valuePos:  b.activeFile.currentPos + staticFields*numberFieldSize + int64(len(key)),
+		tstamp:    tstamp,
+	}
+
+	b.activeFile.currentPos += n
+	b.activeFile.currentSize += n
+
+	if b.config.syncOption == SyncOnPut {
+		b.Sync()
 	}
 	return nil
 }
@@ -195,27 +190,25 @@ func (bitcask *Bitcask) Put(key string, value string) error {
 // Delete removes a key from a bitcask datastore
 // by appending a special TompStone value that will be deleted in the next merge.
 // returns an error if key does not exist in the bitcask datastore.
-func (bitcask *Bitcask) Delete(key string) error {
-	if bitcask.config.writePermission == ReadOnly {
+func (b *Bitcask) Delete(key string) error {
+	if b.config.writePermission == ReadOnly {
 		return BitcaskError(WriteDenied)
 	}
 
-	_, err := bitcask.Get(key)
+	_, err := b.Get(key)
 	if err != nil {
 		return err
 	}
 
-	delete(bitcask.keyDir, key)
-	delete(bitcask.pendingWrites, key)
-
+	delete(b.keyDir, key)
 	return nil
 }
 
 // ListKeys list all keys in a bitcask datastore.
-func (bitcask *Bitcask) ListKeys() []string {
+func (b *Bitcask) ListKeys() []string {
 	var list []string
 
-	for key := range bitcask.keyDir {
+	for key := range b.keyDir {
 		list = append(list, key)
 	}
 	return list
@@ -223,9 +216,9 @@ func (bitcask *Bitcask) ListKeys() []string {
 
 // Fold folds over all key/value pairs in a bitcask datastore.
 // fun is expected to be in the form: F(K, V, Acc) -> Acc
-func (bitcask *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
-	for key := range bitcask.keyDir {
-		value, _ := bitcask.Get(key)
+func (b *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
+	for key := range b.keyDir {
+		value, _ := b.Get(key)
 		acc = fun(key, value, acc)
 	}
 	return acc
@@ -234,8 +227,8 @@ func (bitcask *Bitcask) Fold(fun func(string, string, any) any, acc any) any {
 // Merge rearrange the bitcask datastore in a more compact form.
 // Also produces hintfiles to provide a faster startup.
 // returns an error if ReadWrite permission is not set.
-func (bitcask *Bitcask) Merge() error {
-	if bitcask.config.writePermission == ReadOnly {
+func (b *Bitcask) Merge() error {
+	if b.config.writePermission == ReadOnly {
 		return BitcaskError(WriteDenied)
 	}
 
@@ -246,27 +239,27 @@ func (bitcask *Bitcask) Merge() error {
 
 	mergeFileName := strconv.FormatInt(time.Now().UnixMicro(), 10)
 	hintFileName := hintFilePrefix + mergeFileName
-	bitcask.Sync()
+	b.Sync()
 
-	mergeFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, mergeFileName),
+	mergeFile, _ := os.OpenFile(path.Join(b.directoryPath, mergeFileName),
 		os.O_CREATE|os.O_RDWR, fileMode)
 
-	hintFile, _ := os.OpenFile(path.Join(bitcask.directoryPath, hintFileName),
+	hintFile, _ := os.OpenFile(path.Join(b.directoryPath, hintFileName),
 		os.O_CREATE|os.O_RDWR, fileMode)
 
-	bitcaskDir, _ := os.Open(bitcask.directoryPath)
+	bitcaskDir, _ := os.Open(b.directoryPath)
 	files, _ := bitcaskDir.Readdir(0)
 	for _, file := range files {
-		if file.Name() != bitcask.currentActive.fileName {
+		if file.Name() != b.activeFile.fileName {
 			oldFiles = append(oldFiles, file.Name())
 		}
 	}
 
-	for key, recValue := range bitcask.keyDir {
-		if recValue.fileId != bitcask.currentActive.fileName {
+	for key, recValue := range b.keyDir {
+		if recValue.fileId != b.activeFile.fileName {
 
 			tstamp := time.Now().UnixMicro()
-			value, _ := bitcask.Get(key)
+			value, _ := b.Get(key)
 			fileLine := string(compressFileLine(key, value, tstamp))
 
 			if int64(len(fileLine))+currentSize > maxFileSize {
@@ -274,11 +267,11 @@ func (bitcask *Bitcask) Merge() error {
 				hintFile.Close()
 
 				mergeFileName = strconv.FormatInt(time.Now().UnixMicro(), 10)
-				mergeFile, _ = os.OpenFile(path.Join(bitcask.directoryPath, mergeFileName),
+				mergeFile, _ = os.OpenFile(path.Join(b.directoryPath, mergeFileName),
 					os.O_CREATE|os.O_RDWR, fileMode)
 
 				hintFileName = hintFilePrefix + mergeFileName
-				hintFile, _ = os.OpenFile(path.Join(bitcask.directoryPath, hintFileName),
+				hintFile, _ = os.OpenFile(path.Join(b.directoryPath, hintFileName),
 					os.O_CREATE|os.O_RDWR, fileMode)
 
 				currentPos = 0
@@ -290,7 +283,6 @@ func (bitcask *Bitcask) Merge() error {
 				valueSize: int64(len(value)),
 				valuePos:  currentPos + staticFields*numberFieldSize + int64(len(key)),
 				tstamp:    tstamp,
-				isPending: false,
 			}
 
 			hintFileLine := buildHintFileLine(newKeyDir[key], key)
@@ -299,17 +291,17 @@ func (bitcask *Bitcask) Merge() error {
 			currentPos += int64(n)
 			currentSize += int64(n)
 		} else {
-			newKeyDir[key] = bitcask.keyDir[key]
+			newKeyDir[key] = b.keyDir[key]
 		}
 	}
 
-	bitcask.keyDir = newKeyDir
+	b.keyDir = newKeyDir
 	mergeFile.Close()
 	hintFile.Close()
 
 	for _, file := range oldFiles {
 		if !strings.HasPrefix(file, ".") {
-			os.Remove(path.Join(bitcask.directoryPath, file))
+			os.Remove(path.Join(b.directoryPath, file))
 		}
 	}
 	return nil
@@ -317,40 +309,27 @@ func (bitcask *Bitcask) Merge() error {
 
 // Sync forces all pending writes to be written into disk.
 // returns an error if ReadWrite permission is not set.
-func (bitcask *Bitcask) Sync() error {
-	if bitcask.config.writePermission == ReadOnly {
+func (b *Bitcask) Sync() error {
+	if b.config.writePermission == ReadOnly {
 		return BitcaskError(WriteDenied)
 	}
 
-	for key, line := range bitcask.pendingWrites {
-		if bitcask.keyDir[key].isPending {
-			recValue := bitcask.keyDir[key]
-
-			n := bitcask.writeToActiveFile(string(line))
-
-			recValue.fileId = bitcask.currentActive.fileName
-			recValue.valuePos = bitcask.currentActive.currentPos + staticFields*numberFieldSize + int64(len(key))
-			recValue.isPending = false
-			bitcask.keyDir[key] = recValue
-
-			bitcask.currentActive.currentPos += n
-			bitcask.currentActive.currentSize += n
-
-			delete(bitcask.pendingWrites, key)
-		}
+	err := b.activeFile.file.Sync()
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
 // Close flushes all pending writes into disk and closes the bitcask datastore.
-func (bitcask *Bitcask) Close() {
-	if bitcask.config.writePermission == ReadWrite {
-		bitcask.Sync()
-		bitcask.currentActive.file.Close()
-		os.Remove(path.Join(bitcask.directoryPath, bitcask.lock))
+func (b *Bitcask) Close() {
+	if b.config.writePermission == ReadWrite {
+		b.Sync()
+		b.activeFile.file.Close()
+		os.Remove(path.Join(b.directoryPath, b.lock))
 	} else {
-		os.Remove(path.Join(bitcask.directoryPath, bitcask.keyDirFile))
-		os.Remove(path.Join(bitcask.directoryPath, bitcask.lock))
+		os.Remove(path.Join(b.directoryPath, b.keyDirFile))
+		os.Remove(path.Join(b.directoryPath, b.lock))
 	}
-	bitcask = nil
+	b = nil
 }
