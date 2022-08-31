@@ -6,6 +6,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -52,12 +53,13 @@ type processAccess int
 type pendingWrites map[string]string
 
 type Bitcask struct {
-	directoryPath string
-	lock          string
-	keyDirFile    string
-	keyDir        map[string]record
-	config        options
-	activeFile    dataFile
+	directoryPath  string
+	lock           string
+	keyDirFile     string
+	keyDir         map[string]record
+	config         options
+	activeFile     dataFile
+	readWriteMutex mutex
 }
 
 type dataFile struct {
@@ -79,6 +81,11 @@ type options struct {
 	syncOption      ConfigOpt
 }
 
+type mutex struct {
+	status bool
+	m      sync.Mutex
+}
+
 func (e BitcaskError) Error() string {
 	return string(e)
 }
@@ -93,6 +100,9 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 		keyDir:        make(map[string]record),
 		directoryPath: dirPath,
 		config:        options{writePermission: ReadOnly, syncOption: SyncOnDemand},
+		readWriteMutex: mutex{
+			status: false,
+		},
 	}
 
 	for _, opt := range opts {
@@ -109,7 +119,7 @@ func Open(dirPath string, opts ...ConfigOpt) (*Bitcask, error) {
 	if openErr == nil {
 		if lock, err := bitcask.lockCheck(); lock == writer {
 			if err != nil {
-				return nil, err 
+				return nil, err
 			}
 			return nil, BitcaskError(WriterExist)
 		}
@@ -177,6 +187,8 @@ func (b *Bitcask) Get(key string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
+	for b.readWriteMutex.status {
+	}
 	file.ReadAt(buf, int64(recValue.valuePos))
 	return string(buf), nil
 }
@@ -184,6 +196,14 @@ func (b *Bitcask) Get(key string) (string, error) {
 // Put stores a value by key in a bitcask datastore.
 // Sync on each put if SyncOnPut option is set.
 func (b *Bitcask) Put(key string, value string) error {
+	b.readWriteMutex.m.Lock()
+	b.readWriteMutex.status = true
+	defer func() {
+		fmt.Println("here")
+		b.readWriteMutex.status = false
+		b.readWriteMutex.m.Unlock()
+		fmt.Println("there")
+	}()
 	if b.config.writePermission == ReadOnly {
 		return BitcaskError(WriteDenied)
 	}

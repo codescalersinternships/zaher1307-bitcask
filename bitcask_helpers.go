@@ -161,7 +161,7 @@ func (b *Bitcask) buildKeyDirFile() error {
 		tstampStr := padWithZero(recValue.tstamp)
 		keySizeStr := padWithZero(int64(len(key)))
 
-		fmt.Fprintln(keyDirFile, fileIdStr + valueSizeStr + valuePosStr + tstampStr + keySizeStr + key)
+		fmt.Fprintln(keyDirFile, fileIdStr+valueSizeStr+valuePosStr+tstampStr+keySizeStr+key)
 	}
 	return nil
 }
