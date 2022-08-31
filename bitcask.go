@@ -199,10 +199,8 @@ func (b *Bitcask) Put(key string, value string) error {
 	b.readWriteMutex.m.Lock()
 	b.readWriteMutex.status = true
 	defer func() {
-		fmt.Println("here")
 		b.readWriteMutex.status = false
 		b.readWriteMutex.m.Unlock()
-		fmt.Println("there")
 	}()
 	if b.config.writePermission == ReadOnly {
 		return BitcaskError(WriteDenied)
