@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bitcask"
+	"bitcask/pkg/bitcask"
 	"fmt"
 	"path"
 )
