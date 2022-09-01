@@ -1,12 +1,18 @@
 package main
 
 import (
-	"bitcask/pkg/resp_server"
 	"log"
+
+	"bitcask/pkg/bitcask"
+	resp "bitcask/pkg/resp_server"
 )
 
 func main() {
-	err := bitcask.StartServer()
+	b, err := bitcask.Open("resp_server", bitcask.ReadWrite)
+	if err != nil {
+		log.Println("error build bitcask")
+	}
+	err = resp.StartServer(b, "6379")
 	if err != nil {
 		log.Println("error connection")
 	}
