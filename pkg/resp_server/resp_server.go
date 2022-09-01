@@ -2,14 +2,16 @@ package bitcask
 
 import (
 	"errors"
-	"github.com/tidwall/resp"
 	"log"
 	"sync"
+
+	"bitcask/pkg/bitcask"
+	"github.com/tidwall/resp"
 )
 
 func StartServer() error {
 	var mu sync.RWMutex
-	bitcask, err := Open("./resp_server", ReadWrite)
+	bitcask, err := bitcask.Open("./resp_server", bitcask.ReadWrite)
 	if err != nil {
 		return err
 	}
