@@ -5,6 +5,12 @@ pluggability allowed progress on Riak to be parallelized such that storage engin
 without impact on the rest of the codebase.
 **NOTE:** All project specifications and usage are mentioned in this [Official Bitcask Design Paper](https://riak.com/assets/bitcask-intro.pdf)
 
+## use bitcask
+```
+git clone https://github.com/codescalersinternships/zaher1307-bitcask.git
+mv zaher1307-bitcask bitcask
+```
+
 ## bitcask with RESP (REdis Serialization Protocol)
 you can connect to bitcask as redis server and you are client. just run `demo/demo_resp_server/resps_server.go` and run `redis-cli` in your terminal.
 allowed methods are `SET-GET-DELETE`.
