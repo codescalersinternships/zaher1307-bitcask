@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	err := bitcask.Start_server()
+	err := bitcask.StartServer()
 	if err != nil {
 		log.Println("error connection")
 	}

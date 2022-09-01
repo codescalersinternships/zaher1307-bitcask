@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-func Start_server() error {
+func StartServer() error {
 	var mu sync.RWMutex
 	bitcask, err := Open("./resp_server", ReadWrite)
 	if err != nil {
