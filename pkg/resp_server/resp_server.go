@@ -26,6 +26,13 @@ type Request struct {
 	Args   []interface{}
 }
 
+type Server struct {
+	mu       sync.Mutex
+	handlers map[string]CallBackHandler
+}
+
+type CallBackHandler func(conn *Conn, req *Request)
+
 func NewConn(c net.Conn) *Conn {
 	return &Conn{
 		conn: c,
@@ -106,6 +113,7 @@ func (c *Conn) WriteBulk(reply interface{}) error {
 
 	return c.writeBulkHelper(reply)
 }
+
 func (c *Conn) writeBulkHelper(reply interface{}) error {
 	switch reply := reply.(type) {
 	case nil:
@@ -154,7 +162,6 @@ func (c *Conn) WriteReply(args []interface{}) error {
 			break
 		}
 	}
-
 	return err
 }
 
@@ -222,14 +229,6 @@ func (c *Conn) readReply() (interface{}, error) {
 		return rts, nil
 	}
 	return nil, errors.New("bad protocol")
-}
-
-
-type CallBackHandler func(conn *Conn, req *Request)
-
-type Server struct {
-	mu       sync.Mutex
-	handlers map[string]CallBackHandler
 }
 
 func NewServer() *Server {
